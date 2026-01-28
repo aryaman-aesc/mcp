@@ -28,9 +28,12 @@ def list_tools():
     })
 
 # ---- CALL TOOL ----
-@app.route("/mcp/tools/call", methods=["POST"])
+@app.route("/mcp/tools/call", methods=["POST", "OPTIONS"], strict_slashes=False)
 def call_tool():
-    data = request.json
+    if request.method == "OPTIONS":
+        return "", 200
+
+    data = request.get_json(force=True)
     tool_name = data.get("name")
     args = data.get("arguments", {})
 
@@ -45,9 +48,7 @@ def call_tool():
             ]
         })
 
-    return jsonify({
-        "error": f"Unknown tool: {tool_name}"
-    }), 400
+    return jsonify({"error": f"Unknown tool: {tool_name}"}), 400
 
 
 if __name__ == "__main__":
