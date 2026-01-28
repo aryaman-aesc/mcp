@@ -1,7 +1,8 @@
-from flask import Flask, Response, request
-import json, time, uuid
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+import json, asyncio, uuid
 
-app = Flask(__name__)
+app = FastAPI()
 
 def sse(data):
     return f"data: {json.dumps(data)}\n\n"
@@ -9,14 +10,13 @@ def sse(data):
 def ping():
     return ": keep-alive\n\n"
 
-@app.route("/", methods=["GET"])
-def root():
-    return "MCP server alive", 200
+@app.get("/")
+async def root():
+    return "MCP server alive"
 
-
-@app.route("/mcp/tools", methods=["GET"])
-def list_tools():
-    def stream():
+@app.get("/mcp/tools")
+async def list_tools():
+    async def stream():
         yield sse({
             "jsonrpc": "2.0",
             "id": str(uuid.uuid4()),
@@ -24,64 +24,35 @@ def list_tools():
                 "tools": [
                     {
                         "name": "say_hello",
-                        "description": "Say hello to a user",
+                        "description": "Say hello",
                         "inputSchema": {
                             "type": "object",
-                            "properties": {
-                                "name": {"type": "string"}
-                            },
+                            "properties": { "name": {"type": "string"} },
                             "required": ["name"]
                         }
                     }
                 ]
             }
         })
-
         while True:
-            time.sleep(15)
+            await asyncio.sleep(10)
             yield ping()
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
-    return Response(
-        stream(),
-        content_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    )
-
-
-@app.route("/mcp/tools/call", methods=["POST"])
-def call_tool():
-    payload = request.get_json(force=True)
-
-    def stream():
+@app.post("/mcp/tools/call")
+async def call_tool(request: Request):
+    payload = await request.json()
+    async def stream():
         yield sse({
             "jsonrpc": "2.0",
-            "id": payload.get("id"),
+            "id": payload.get("id", str(uuid.uuid4())),
             "result": {
                 "content": [
-                    {
-                        "type": "text",
-                        "text": f"Hello, {payload['params']['arguments'].get('name','there')} 👋"
-                    }
+                    {"type": "text", "text": f"Hello, {payload['params']['arguments'].get('name','there')} 👋"}
                 ]
             }
         })
-
         while True:
-            time.sleep(15)
+            await asyncio.sleep(10)
             yield ping()
-
-    return Response(
-        stream(),
-        content_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        },
-    )
-
-
-if __name__ == "__main__":
-    app.run(port=3333, threaded=True)
+    return StreamingResponse(stream(), media_type="text/event-stream")
