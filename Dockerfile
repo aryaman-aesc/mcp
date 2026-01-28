@@ -1,20 +1,18 @@
+# --- Base image ---
 FROM python:3.11-slim
 
-# Prevent Python from writing pyc files
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
+# --- Set workdir ---
 WORKDIR /app
 
-# Install dependencies
+# --- Copy files ---
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy app
 COPY app.py .
 
-# Expose port
+# --- Install dependencies ---
+RUN pip install --no-cache-dir -r requirements.txt
+
+# --- Expose port ---
 EXPOSE 3333
 
-# Run with gunicorn
-CMD ["gunicorn", "-b", "0.0.0.0:3333", "app:app"]
+# --- Command to run ---
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "3333", "--loop", "asyncio", "--http", "h11"]
