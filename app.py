@@ -10,13 +10,10 @@ def sse(data):
 def ping():
     return ": keep-alive\n\n"
 
-@app.get("/")
-async def root():
-    return "MCP server alive"
-
 @app.get("/mcp/tools")
 async def list_tools():
     async def stream():
+        # first event must be JSON-RPC envelope
         yield sse({
             "jsonrpc": "2.0",
             "id": str(uuid.uuid4()),
@@ -34,10 +31,20 @@ async def list_tools():
                 ]
             }
         })
+
         while True:
             await asyncio.sleep(10)
             yield ping()
-    return StreamingResponse(stream(), media_type="text/event-stream")
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        }
+    )
+
 
 @app.post("/mcp/tools/call")
 async def call_tool(request: Request):
@@ -52,7 +59,16 @@ async def call_tool(request: Request):
                 ]
             }
         })
+
         while True:
             await asyncio.sleep(10)
             yield ping()
-    return StreamingResponse(stream(), media_type="text/event-stream")
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive"
+        }
+    )
