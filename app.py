@@ -48,5 +48,19 @@ def call_tool():
 
     return Response(stream(), content_type="text/event-stream")
 
+@app.route("/", methods=["GET"])
+def root():
+    def stream():
+        yield sse({
+            "type": "mcp",
+            "name": "hello-mcp-python",
+            "version": "0.0.1",
+            "endpoints": {
+                "tools": "/mcp/tools",
+                "call": "/mcp/tools/call"
+            }
+        })
+    return Response(stream(), content_type="text/event-stream")
+
 if __name__ == "__main__":
     app.run(port=3333, threaded=True)
