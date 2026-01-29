@@ -1,26 +1,16 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import json
 import asyncio
 import uuid
 
-app = FastAPI(
-    title="MCP Greeting Server",
-    description="A simple MCP server with greeting functionality",
-    version="1.0.0",
-    servers=[
-        {
-            "url": "http://localhost:8000",  # Change to your actual domain in production
-            "description": "Development server"
-        }
-    ]
-)
+app = FastAPI()
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify actual origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,31 +26,38 @@ def ping():
 
 @app.get("/")
 async def root():
-    """Root endpoint with server metadata for ChatGPT connector discovery"""
-    return {
+    """Root endpoint - returns JSON, not SSE"""
+    return JSONResponse({
         "name": "MCP Greeting Server",
         "version": "1.0.0",
         "description": "A simple MCP server that can greet people",
         "mcp_version": "2024-11-05",
         "capabilities": {
-            "tools": True
-        },
-        "endpoints": {
-            "tools": "/mcp/tools",
-            "call_tool": "/mcp/tools/call"
-        },
-        "openapi_schema": "/openapi.json"
-    }
+            "tools": {}
+        }
+    })
+
+@app.get("/.well-known/mcp.json")
+async def well_known():
+    """Well-known endpoint for MCP discovery"""
+    return JSONResponse({
+        "mcpServers": {
+            "greeting": {
+                "url": "/mcp"
+            }
+        }
+    })
 
 @app.get("/health")
 async def health():
     """Health check endpoint"""
-    return {"status": "healthy", "service": "mcp-server"}
+    return JSONResponse({"status": "healthy"})
 
 @app.get("/mcp/tools")
 async def list_tools():
-    """List all available MCP tools"""
+    """List all available MCP tools - SSE endpoint"""
     async def stream():
+        # Send the tools list
         yield sse({
             "jsonrpc": "2.0",
             "id": str(uuid.uuid4()),
@@ -84,10 +81,19 @@ async def list_tools():
             }
         })
         
+        # Send completion event
+        yield sse({
+            "jsonrpc": "2.0",
+            "method": "notifications/complete"
+        })
+        
         # Keep connection alive
-        while True:
-            await asyncio.sleep(15)
-            yield ping()
+        try:
+            while True:
+                await asyncio.sleep(15)
+                yield ping()
+        except asyncio.CancelledError:
+            pass
     
     return StreamingResponse(
         stream(),
@@ -95,13 +101,14 @@ async def list_tools():
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*"
         }
     )
 
 @app.post("/mcp/tools/call")
 async def call_tool(request: Request):
-    """Execute an MCP tool"""
+    """Execute an MCP tool - SSE endpoint"""
     try:
         payload = await request.json()
         tool_name = payload.get("params", {}).get("name")
@@ -111,6 +118,8 @@ async def call_tool(request: Request):
         async def stream():
             if tool_name == "say_hello":
                 name = arguments.get("name", "there")
+                
+                # Send result
                 yield sse({
                     "jsonrpc": "2.0",
                     "id": request_id,
@@ -122,6 +131,12 @@ async def call_tool(request: Request):
                             }
                         ]
                     }
+                })
+                
+                # Send completion
+                yield sse({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/complete"
                 })
             else:
                 # Tool not found error
@@ -137,10 +152,13 @@ async def call_tool(request: Request):
                     }
                 })
             
-            # Keep connection alive for potential streaming responses
-            while True:
-                await asyncio.sleep(15)
-                yield ping()
+            # Keep connection alive
+            try:
+                while True:
+                    await asyncio.sleep(15)
+                    yield ping()
+            except asyncio.CancelledError:
+                pass
         
         return StreamingResponse(
             stream(),
@@ -148,7 +166,8 @@ async def call_tool(request: Request):
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-                "X-Accel-Buffering": "no"
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*"
             }
         )
         
@@ -157,6 +176,29 @@ async def call_tool(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+# Add OPTIONS handler for CORS preflight
+@app.options("/mcp/tools")
+async def options_tools():
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
+@app.options("/mcp/tools/call")
+async def options_call():
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=3333)
