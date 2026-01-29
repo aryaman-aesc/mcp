@@ -1,128 +1,133 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
-import json, uuid
+from fastapi.middleware.cors import CORSMiddleware
+import json
+import asyncio
+import uuid
 
 app = FastAPI()
 
-SSE_HEADERS = {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def sse(obj):
-    return f"data: {json.dumps(obj)}\n\n"
+def sse(data: dict):
+    return f"data: {json.dumps(data)}\n\n"
 
-# -------------------------------------------------
-# ROOT — MUST BE SSE
-# -------------------------------------------------
+def ping():
+    return ": keep-alive\n\n"
+
+# ✅ REQUIRED: HEAD handler for OpenAI
+@app.head("/")
+async def head_root():
+    return Response(
+        status_code=200,
+        headers={"Content-Type": "text/event-stream"}
+    )
+
+# ✅ REQUIRED: ROOT MUST BE SSE
 @app.get("/")
 async def root():
     async def stream():
-        # flush immediately
-        yield ":ok\n\n"
+        # Immediate byte flush (CRITICAL)
+        yield ping()
 
+        # MCP handshake response
         yield sse({
             "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
             "result": {
-                "name": "AIRA MCP Connector",
-                "version": "1.0.0",
-                "mcp_version": "2024-11-05"
+                "capabilities": {
+                    "tools": {
+                        "say_hello": {
+                            "description": "Say hello to someone",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {
+                                        "type": "string"
+                                    }
+                                },
+                                "required": ["name"]
+                            }
+                        }
+                    }
+                }
             }
         })
+
+        # Signal completion
+        yield sse({
+            "jsonrpc": "2.0",
+            "method": "notifications/complete"
+        })
+
+        # Keep stream alive
+        while True:
+            await asyncio.sleep(15)
+            yield ping()
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+# ✅ Tool execution endpoint (OpenAI WILL call this)
+@app.post("/")
+async def call_tool(request: Request):
+    payload = await request.json()
+    tool = payload.get("params", {}).get("name")
+    args = payload.get("params", {}).get("arguments", {})
+    req_id = payload.get("id", str(uuid.uuid4()))
+
+    async def stream():
+        if tool == "say_hello":
+            name = args.get("name", "there")
+            yield sse({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"Hello {name}! 👋"
+                        }
+                    ]
+                }
+            })
+        else:
+            yield sse({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {
+                    "code": -32601,
+                    "message": "Tool not found"
+                }
+            })
 
         yield sse({
             "jsonrpc": "2.0",
             "method": "notifications/complete"
         })
 
-    return StreamingResponse(stream(), headers=SSE_HEADERS)
+        while True:
+            await asyncio.sleep(15)
+            yield ping()
 
-# -------------------------------------------------
-# MCP HANDSHAKE
-# -------------------------------------------------
-@app.get("/mcp")
-async def mcp():
-    async def stream():
-        yield ":ok\n\n"
-        yield sse({"jsonrpc": "2.0", "result": "ok"})
-        yield sse({"jsonrpc": "2.0", "method": "notifications/complete"})
-
-    return StreamingResponse(stream(), headers=SSE_HEADERS)
-
-# -------------------------------------------------
-# TOOL DISCOVERY
-# -------------------------------------------------
-@app.get("/mcp/tools")
-async def tools():
-    async def stream():
-        yield ":ok\n\n"
-
-        yield sse({
-            "jsonrpc": "2.0",
-            "id": str(uuid.uuid4()),
-            "result": {
-                "tools": [
-                    {
-                        "name": "search",
-                        "description": "Search AIRA dataset",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "query": {"type": "string"}
-                            },
-                            "required": ["query"]
-                        }
-                    },
-                    {
-                        "name": "fetch",
-                        "description": "Fetch AIRA document",
-                        "inputSchema": {
-                            "type": "object",
-                            "properties": {
-                                "id": {"type": "string"}
-                            },
-                            "required": ["id"]
-                        }
-                    }
-                ]
-            }
-        })
-
-        yield sse({"jsonrpc": "2.0", "method": "notifications/complete"})
-
-    return StreamingResponse(stream(), headers=SSE_HEADERS)
-
-# -------------------------------------------------
-# TOOL EXECUTION
-# -------------------------------------------------
-@app.post("/mcp/tools/call")
-async def call_tool(req: Request):
-    body = await req.json()
-    name = body["params"]["name"]
-    args = body["params"]["arguments"]
-    rid = body.get("id", str(uuid.uuid4()))
-
-    async def stream():
-        yield ":ok\n\n"
-
-        if name == "search":
-            payload = [{"id": "cand_1", "title": "Backend Engineer"}]
-        else:
-            payload = {"id": args.get("id"), "text": "Candidate profile"}
-
-        yield sse({
-            "jsonrpc": "2.0",
-            "id": rid,
-            "result": {
-                "content": [{
-                    "type": "text",
-                    "text": json.dumps(payload)
-                }]
-            }
-        })
-
-        yield sse({"jsonrpc": "2.0", "method": "notifications/complete"})
-
-    return StreamingResponse(stream(), headers=SSE_HEADERS)
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
