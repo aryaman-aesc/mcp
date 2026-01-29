@@ -1,15 +1,10 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-import json
-import asyncio
-import uuid
+import json, asyncio, uuid
 
 app = FastAPI()
 
-# -----------------------------
-# CORS
-# -----------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,57 +13,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------
-# SSE helpers
-# -----------------------------
-def sse(data: dict) -> str:
+# ---------------- SSE helpers ----------------
+def sse(data):
     return f"data: {json.dumps(data)}\n\n"
 
-def ping() -> str:
+def ping():
     return ": keep-alive\n\n"
 
-# -----------------------------
-# Root (JSON is OK here)
-# -----------------------------
+# ---------------- ROOT ----------------
 @app.get("/")
 async def root():
-    return JSONResponse({
-        "name": "AIRA MCP Connector",
-        "version": "1.0.0",
-        "mcp_version": "2024-11-05",
-        "description": "Read-only MCP server for OpenAI Connectors",
-        "capabilities": {
-            "tools": {}
-        }
-    })
+    return {"status": "ok"}
 
-# -----------------------------
-# MCP discovery
-# -----------------------------
+# ---------------- MCP HANDSHAKE (CRITICAL) ----------------
+@app.get("/mcp")
+async def mcp_handshake():
+    async def stream():
+        # MUST yield immediately
+        yield ":\n\n"
+
+        yield sse({
+            "jsonrpc": "2.0",
+            "result": {
+                "name": "AIRA MCP Connector",
+                "version": "1.0.0",
+                "mcp_version": "2024-11-05"
+            }
+        })
+
+        yield sse({
+            "jsonrpc": "2.0",
+            "method": "notifications/complete"
+        })
+
+        while True:
+            await asyncio.sleep(15)
+            yield ping()
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+# ---------------- MCP DISCOVERY ----------------
 @app.get("/.well-known/mcp.json")
 async def well_known():
-    return JSONResponse({
+    return {
         "mcpServers": {
             "aira": {
                 "url": "/mcp"
             }
         }
-    })
+    }
 
-# -----------------------------
-# Health
-# -----------------------------
-@app.get("/health")
-async def health():
-    return JSONResponse({"status": "healthy"})
-
-# -----------------------------
-# MCP TOOLS LIST (SSE REQUIRED)
-# -----------------------------
+# ---------------- TOOLS LIST ----------------
 @app.get("/mcp/tools")
 async def list_tools():
     async def stream():
-        # 🔴 MUST yield immediately (forces SSE)
         yield ":\n\n"
 
         yield sse({
@@ -82,24 +88,18 @@ async def list_tools():
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "Search query"
-                                }
+                                "query": {"type": "string"}
                             },
                             "required": ["query"]
                         }
                     },
                     {
                         "name": "fetch",
-                        "description": "Fetch a document by id",
+                        "description": "Fetch document by id",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "id": {
-                                    "type": "string",
-                                    "description": "Document ID"
-                                }
+                                "id": {"type": "string"}
                             },
                             "required": ["id"]
                         }
@@ -117,146 +117,57 @@ async def list_tools():
             await asyncio.sleep(15)
             yield ping()
 
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream; charset=utf-8",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*",
-        }
-    )
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
-# -----------------------------
-# MCP TOOL CALL (SSE REQUIRED)
-# -----------------------------
+# ---------------- TOOL CALL ----------------
 @app.post("/mcp/tools/call")
 async def call_tool(request: Request):
-    try:
-        payload = await request.json()
-        tool_name = payload.get("params", {}).get("name")
-        arguments = payload.get("params", {}).get("arguments", {})
-        request_id = payload.get("id", str(uuid.uuid4()))
+    payload = await request.json()
+    name = payload["params"]["name"]
+    args = payload["params"]["arguments"]
+    rid = payload.get("id", str(uuid.uuid4()))
 
-        async def stream():
-            # 🔴 MUST yield immediately
-            yield ":\n\n"
+    async def stream():
+        yield ":\n\n"
 
-            if tool_name == "search":
-                query = arguments.get("query", "")
-
-                # TODO: replace with real AIRA search
-                results = [
-                    {
-                        "id": "candidate_123",
-                        "title": "Backend Engineer – Node.js",
-                        "url": "aira://candidate/123"
-                    },
-                    {
-                        "id": "jd_456",
-                        "title": "Senior Backend Engineer JD",
-                        "url": "aira://jd/456"
-                    }
-                ]
-
-                yield sse({
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json.dumps(results)
-                            }
-                        ]
-                    }
-                })
-
-            elif tool_name == "fetch":
-                doc_id = arguments.get("id")
-
-                # TODO: replace with real AIRA fetch
-                document = {
-                    "id": doc_id,
-                    "type": "candidate",
-                    "content": (
-                        "Candidate: John Doe\n"
-                        "Role: Backend Engineer\n"
-                        "Skills: Node.js, TypeScript, PostgreSQL\n"
-                        "Experience: 5 years\n"
-                        "Interview Summary: Strong system design and API skills."
-                    )
-                }
-
-                yield sse({
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "result": {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": json.dumps(document)
-                            }
-                        ]
-                    }
-                })
-
-            else:
-                yield sse({
-                    "jsonrpc": "2.0",
-                    "id": request_id,
-                    "error": {
-                        "code": -32601,
-                        "message": f"Tool not found: {tool_name}"
-                    }
-                })
-
+        if name == "search":
             yield sse({
                 "jsonrpc": "2.0",
-                "method": "notifications/complete"
+                "id": rid,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": json.dumps([
+                            {"id": "cand_1", "title": "Backend Engineer"}
+                        ])
+                    }]
+                }
             })
 
-            while True:
-                await asyncio.sleep(15)
-                yield ping()
+        elif name == "fetch":
+            yield sse({
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {
+                    "content": [{
+                        "type": "text",
+                        "text": "Candidate: Backend Engineer, Node.js, 5 yrs"
+                    }]
+                }
+            })
 
-        return StreamingResponse(
-            stream(),
-            media_type="text/event-stream; charset=utf-8",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-                "Access-Control-Allow-Origin": "*",
-            }
-        )
+        yield sse({
+            "jsonrpc": "2.0",
+            "method": "notifications/complete"
+        })
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        while True:
+            await asyncio.sleep(15)
+            yield ping()
 
-# -----------------------------
-# CORS preflight
-# -----------------------------
-@app.options("/mcp/tools")
-async def options_tools():
-    return JSONResponse({}, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "*",
-    })
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
-@app.options("/mcp/tools/call")
-async def options_call():
-    return JSONResponse({}, headers={
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "*",
-    })
-
-# -----------------------------
-# Local run
-# -----------------------------
+# ---------------- RUN ----------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=3333)
