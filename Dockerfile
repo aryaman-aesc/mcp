@@ -8,10 +8,18 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 
-EXPOSE 3333
+# Render expects $PORT
+EXPOSE 10000
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "3333", "--workers", "1"]
+CMD ["uvicorn", "app:app", \
+     "--host", "0.0.0.0", \
+     "--port", "10000", \
+     "--workers", "1", \
+     "--loop", "asyncio", \
+     "--http", "h11", \
+     "--timeout-keep-alive", "0", \
+     "--log-level", "info"]
