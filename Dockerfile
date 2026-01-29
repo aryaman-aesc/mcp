@@ -1,18 +1,17 @@
-# --- Base image ---
 FROM python:3.11-slim
 
-# --- Set workdir ---
 WORKDIR /app
 
-# --- Copy files ---
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 COPY requirements.txt .
+RUN pip install -r requirements.txt
+
 COPY app.py .
 
-# --- Install dependencies ---
-RUN pip install --no-cache-dir -r requirements.txt
-
-# --- Expose port ---
 EXPOSE 3333
 
-# --- Command to run ---
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "3333", "--loop", "asyncio", "--http", "h11"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "3333", "--workers", "1"]
