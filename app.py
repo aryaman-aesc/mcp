@@ -1,37 +1,21 @@
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import json, asyncio, uuid
+import asyncio, json, uuid
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ---------------- SSE helpers ----------------
+# ---------- SSE helpers ----------
 def sse(data):
     return f"data: {json.dumps(data)}\n\n"
 
 def ping():
     return ": keep-alive\n\n"
 
-# ---------------- ROOT ----------------
+# ---------- ROOT (MUST BE SSE) ----------
 @app.get("/")
 async def root():
-    return {"status": "ok"}
-
-# ---------------- MCP HANDSHAKE (CRITICAL) ----------------
-@app.get("/mcp")
-async def mcp_handshake():
     async def stream():
-        # MUST yield immediately
         yield ":\n\n"
-
         yield sse({
             "jsonrpc": "2.0",
             "result": {
@@ -40,43 +24,51 @@ async def mcp_handshake():
                 "mcp_version": "2024-11-05"
             }
         })
-
         yield sse({
             "jsonrpc": "2.0",
             "method": "notifications/complete"
         })
-
         while True:
             await asyncio.sleep(15)
             yield ping()
 
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        }
-    )
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
-# ---------------- MCP DISCOVERY ----------------
+# ---------- MCP HANDSHAKE ----------
+@app.get("/mcp")
+async def mcp():
+    async def stream():
+        yield ":\n\n"
+        yield sse({
+            "jsonrpc": "2.0",
+            "result": {"status": "ok"}
+        })
+        yield sse({
+            "jsonrpc": "2.0",
+            "method": "notifications/complete"
+        })
+        while True:
+            await asyncio.sleep(15)
+            yield ping()
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+# ---------- DISCOVERY (JSON is allowed here) ----------
 @app.get("/.well-known/mcp.json")
 async def well_known():
-    return {
+    return JSONResponse({
         "mcpServers": {
             "aira": {
                 "url": "/mcp"
             }
         }
-    }
+    })
 
-# ---------------- TOOLS LIST ----------------
+# ---------- TOOLS ----------
 @app.get("/mcp/tools")
-async def list_tools():
+async def tools():
     async def stream():
         yield ":\n\n"
-
         yield sse({
             "jsonrpc": "2.0",
             "id": str(uuid.uuid4()),
@@ -95,7 +87,7 @@ async def list_tools():
                     },
                     {
                         "name": "fetch",
-                        "description": "Fetch document by id",
+                        "description": "Fetch document",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -105,6 +97,42 @@ async def list_tools():
                         }
                     }
                 ]
+            }
+        })
+        yield sse({
+            "jsonrpc": "2.0",
+            "method": "notifications/complete"
+        })
+        while True:
+            await asyncio.sleep(15)
+            yield ping()
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
+
+# ---------- TOOL CALL ----------
+@app.post("/mcp/tools/call")
+async def call_tool(request: Request):
+    body = await request.json()
+    name = body["params"]["name"]
+    args = body["params"]["arguments"]
+    rid = body.get("id", str(uuid.uuid4()))
+
+    async def stream():
+        yield ":\n\n"
+
+        if name == "search":
+            result = [{"id": "cand_1", "title": "Backend Engineer"}]
+        else:
+            result = {"id": args.get("id"), "content": "Candidate profile"}
+
+        yield sse({
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps(result)
+                }]
             }
         })
 
@@ -118,56 +146,3 @@ async def list_tools():
             yield ping()
 
     return StreamingResponse(stream(), media_type="text/event-stream")
-
-# ---------------- TOOL CALL ----------------
-@app.post("/mcp/tools/call")
-async def call_tool(request: Request):
-    payload = await request.json()
-    name = payload["params"]["name"]
-    args = payload["params"]["arguments"]
-    rid = payload.get("id", str(uuid.uuid4()))
-
-    async def stream():
-        yield ":\n\n"
-
-        if name == "search":
-            yield sse({
-                "jsonrpc": "2.0",
-                "id": rid,
-                "result": {
-                    "content": [{
-                        "type": "text",
-                        "text": json.dumps([
-                            {"id": "cand_1", "title": "Backend Engineer"}
-                        ])
-                    }]
-                }
-            })
-
-        elif name == "fetch":
-            yield sse({
-                "jsonrpc": "2.0",
-                "id": rid,
-                "result": {
-                    "content": [{
-                        "type": "text",
-                        "text": "Candidate: Backend Engineer, Node.js, 5 yrs"
-                    }]
-                }
-            })
-
-        yield sse({
-            "jsonrpc": "2.0",
-            "method": "notifications/complete"
-        })
-
-        while True:
-            await asyncio.sleep(15)
-            yield ping()
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
-
-# ---------------- RUN ----------------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=3333)
