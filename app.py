@@ -1,17 +1,13 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, JSONResponse
-import asyncio, json, uuid
+import json, uuid
 
 app = FastAPI()
 
-# ---------- SSE helpers ----------
 def sse(data):
     return f"data: {json.dumps(data)}\n\n"
 
-def ping():
-    return ": keep-alive\n\n"
-
-# ---------- ROOT (MUST BE SSE) ----------
+# ---------------- ROOT (SSE, FINITE) ----------------
 @app.get("/")
 async def root():
     async def stream():
@@ -28,32 +24,23 @@ async def root():
             "jsonrpc": "2.0",
             "method": "notifications/complete"
         })
-        while True:
-            await asyncio.sleep(15)
-            yield ping()
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
-# ---------- MCP HANDSHAKE ----------
+# ---------------- MCP HANDSHAKE ----------------
 @app.get("/mcp")
 async def mcp():
     async def stream():
         yield ":\n\n"
-        yield sse({
-            "jsonrpc": "2.0",
-            "result": {"status": "ok"}
-        })
+        yield sse({"jsonrpc": "2.0", "result": "ok"})
         yield sse({
             "jsonrpc": "2.0",
             "method": "notifications/complete"
         })
-        while True:
-            await asyncio.sleep(15)
-            yield ping()
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
-# ---------- DISCOVERY (JSON is allowed here) ----------
+# ---------------- DISCOVERY ----------------
 @app.get("/.well-known/mcp.json")
 async def well_known():
     return JSONResponse({
@@ -64,7 +51,7 @@ async def well_known():
         }
     })
 
-# ---------- TOOLS ----------
+# ---------------- TOOLS LIST ----------------
 @app.get("/mcp/tools")
 async def tools():
     async def stream():
@@ -103,13 +90,10 @@ async def tools():
             "jsonrpc": "2.0",
             "method": "notifications/complete"
         })
-        while True:
-            await asyncio.sleep(15)
-            yield ping()
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
-# ---------- TOOL CALL ----------
+# ---------------- TOOL CALL ----------------
 @app.post("/mcp/tools/call")
 async def call_tool(request: Request):
     body = await request.json()
@@ -140,9 +124,5 @@ async def call_tool(request: Request):
             "jsonrpc": "2.0",
             "method": "notifications/complete"
         })
-
-        while True:
-            await asyncio.sleep(15)
-            yield ping()
 
     return StreamingResponse(stream(), media_type="text/event-stream")
